@@ -8,7 +8,7 @@ import InfoPanel from '../components/InfoPanel';
 import { 
   SettingsModal, CreateGroupModal, NotificationsModal 
 } from '../components/Modals';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, MessageCircle } from 'lucide-react';
 
 const Dashboard = () => {
   const { user } = useAuth();
@@ -18,7 +18,6 @@ const Dashboard = () => {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [conversations, setConversations] = useState([]);
 
-  // Modals States
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false);
@@ -42,21 +41,42 @@ const Dashboard = () => {
   useEffect(() => {
     if (!socket) return;
 
+    // conversation_updated — update metadata or members in sidebar list
     const handleConversationUpdated = async (updatedConv) => {
+      // If this was triggered by a member removal/leave (membersChanged flag),
+      // fetch fresh conversation data to get updated member list
+      if (updatedConv.membersChanged) {
+        try {
+          const response = await api.get(`/conversations/${updatedConv.id}`);
+          const freshConv = response.data;
+          setConversations(prev => prev.map(c => {
+            if (c.id === updatedConv.id) {
+              return { ...c, ...freshConv };
+            }
+            return c;
+          }));
+        } catch (err) {
+          // Conversation may have been deleted
+          console.error('Error refreshing conversation after member change:', err);
+        }
+        return;
+      }
+
       setConversations(prev => {
         const exists = prev.find(c => c.id === updatedConv.id);
         
         if (exists) {
-          // If conversation already exists in sidebar, update it
           return prev.map(c => {
             if (c.id === updatedConv.id) {
               return {
                 ...c,
-                name: updatedConv.name,
-                avatarUrl: updatedConv.avatarUrl,
-                updatedAt: updatedConv.updatedAt,
-                lastMessage: updatedConv.lastMessage,
-                sortDate: updatedConv.lastMessage ? updatedConv.lastMessage.createdAt : updatedConv.updatedAt
+                name: updatedConv.name ?? c.name,
+                avatarUrl: updatedConv.avatarUrl ?? c.avatarUrl,
+                updatedAt: updatedConv.updatedAt ?? c.updatedAt,
+                members: updatedConv.members ?? c.members,
+                ownerId: updatedConv.ownerId ?? c.ownerId,
+                lastMessage: updatedConv.lastMessage !== undefined ? updatedConv.lastMessage : c.lastMessage,
+                sortDate: updatedConv.lastMessage ? updatedConv.lastMessage.createdAt : (updatedConv.updatedAt ?? c.sortDate)
               };
             }
             return c;
@@ -66,11 +86,17 @@ const Dashboard = () => {
             return new Date(b.sortDate) - new Date(a.sortDate);
           });
         } else {
-          // Fetch full conversation details to insert
+          // Fetch full conversation details to insert (new group invite etc.)
           fetchAndInsertConversation(updatedConv.id);
           return prev;
         }
       });
+    };
+
+    // group_left — remove conversation from user's list (was kicked/removed)
+    const handleGroupLeft = ({ conversationId }) => {
+      setConversations(prev => prev.filter(c => c.id !== conversationId));
+      setActiveChatId(prev => prev === conversationId ? null : prev);
     };
 
     const fetchAndInsertConversation = async (id) => {
@@ -78,7 +104,6 @@ const Dashboard = () => {
         const response = await api.get(`/conversations/${id}`);
         const c = response.data;
         
-        // Load latest messages
         const msgResponse = await api.get(`/messages/${id}?limit=1`);
         const lastMsg = msgResponse.data[0] || null;
 
@@ -110,20 +135,35 @@ const Dashboard = () => {
       }
     };
 
+    // user_profile_updated — update usernames and avatars in existing conversations globally
+    const handleUserProfileUpdated = ({ userId, username, avatarUrl }) => {
+      setConversations(prev => prev.map(conv => ({
+        ...conv,
+        members: conv.members.map(member => {
+          if (member.userId === userId) {
+            return { ...member, username, avatarUrl };
+          }
+          return member;
+        })
+      })));
+    };
+
     socket.on('conversation_updated', handleConversationUpdated);
+    socket.on('group_left', handleGroupLeft);
+    socket.on('user_profile_updated', handleUserProfileUpdated);
 
     return () => {
       socket.off('conversation_updated', handleConversationUpdated);
+      socket.off('group_left', handleGroupLeft);
+      socket.off('user_profile_updated', handleUserProfileUpdated);
     };
   }, [socket]);
 
-  // Handle Select Chat
   const handleSelectChat = (id) => {
     setActiveChatId(id);
-    setIsInfoOpen(false); // default to closed when changing chat
+    setIsInfoOpen(false);
   };
 
-  // Group created callback
   const handleGroupCreated = (newGroup) => {
     const formatted = {
       id: newGroup.id,
@@ -152,10 +192,9 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans">
       
       {/* --- SIDEBAR LIST --- */}
-      {/* Hidden on mobile if activeChatId is set */}
       <div className={`h-full flex-shrink-0 ${activeChatId ? 'hidden md:flex' : 'flex w-full md:w-auto'}`}>
         <Sidebar
           activeChatId={activeChatId}
@@ -169,24 +208,21 @@ const Dashboard = () => {
       </div>
 
       {/* --- ACTIVE CHAT PANEL --- */}
-      {/* Hidden on mobile if activeChatId is not set */}
       <div className={`flex-1 h-full flex ${!activeChatId ? 'hidden md:flex' : 'flex'}`}>
         {activeChatId ? (
           <div className="flex-1 h-full flex relative overflow-hidden">
             
-            {/* Mobile Back Button layout */}
             <div className="flex-1 h-full flex flex-col relative">
-              {/* Back button container overlay for mobile */}
+              {/* Mobile Back Button */}
               <div className="absolute top-4 left-4 z-20 md:hidden">
                 <button 
                   onClick={() => handleSelectChat(null)}
-                  className="p-2 bg-slate-900/90 rounded-full border border-slate-800 text-slate-400 hover:text-white"
+                  className="p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full border border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white shadow-sm"
                 >
                   <ArrowLeft size={16} />
                 </button>
               </div>
 
-              {/* Chat log viewport */}
               <ChatArea
                 conversationId={activeChatId}
                 isInfoOpen={isInfoOpen}
@@ -196,7 +232,7 @@ const Dashboard = () => {
               />
             </div>
 
-            {/* --- DETAILED INFOPANEL (Toggled from ChatHeader) --- */}
+            {/* --- DETAILED INFOPANEL --- */}
             {isInfoOpen && (
               <div className="absolute inset-y-0 right-0 z-30 md:static h-full flex-shrink-0">
                 <InfoPanel
@@ -211,8 +247,14 @@ const Dashboard = () => {
 
           </div>
         ) : (
-          <div className="flex-1 h-full flex flex-col justify-center items-center bg-slate-950 text-slate-600">
-            <p className="text-sm">Wybierz lub wyszukaj rozmówcę, by zacząć pisać</p>
+          <div className="flex-1 h-full flex flex-col justify-center items-center bg-slate-50 dark:bg-slate-950 text-slate-400 dark:text-slate-600 gap-4">
+            <div className="p-5 bg-gradient-to-tr from-violet-600/10 to-indigo-600/10 dark:from-violet-600/5 dark:to-indigo-600/5 border border-violet-200 dark:border-violet-800/30 rounded-3xl">
+              <MessageCircle size={48} className="text-violet-300 dark:text-violet-700" />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-medium text-slate-500 dark:text-slate-500">Wybierz rozmowę</p>
+              <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">lub wyszukaj kogoś, by zacząć pisać</p>
+            </div>
           </div>
         )}
       </div>

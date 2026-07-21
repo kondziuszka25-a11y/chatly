@@ -59,6 +59,20 @@ const updateProfile = async (req, res) => {
       }
     });
 
+    // Emit socket event so other users see updated username/avatar in real-time
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('user_profile_updated', {
+          userId: updatedUser.id,
+          username: updatedUser.username,
+          avatarUrl: updatedUser.avatarUrl,
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting profile update:', emitErr);
+    }
+
     res.status(200).json({
       message: 'Profile updated successfully',
       user: updatedUser
@@ -81,14 +95,30 @@ const searchUsers = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    // Find users with matching username, excluding current user
+    // Get list of blocked user IDs (both directions)
+    const blockedRelations = await prisma.blockedUser.findMany({
+      where: {
+        OR: [
+          { blockerId: userId },
+          { blockedId: userId }
+        ]
+      },
+      select: { blockerId: true, blockedId: true }
+    });
+
+    const blockedIds = new Set();
+    blockedRelations.forEach(b => {
+      if (b.blockerId === userId) blockedIds.add(b.blockedId);
+      if (b.blockedId === userId) blockedIds.add(b.blockerId);
+    });
+
+    // Find users with matching username, excluding current user and blocked users
     const users = await prisma.user.findMany({
       where: {
-        username: {
-          contains: q
-        },
+        username: { contains: q },
         id: {
-          not: userId
+          not: userId,
+          ...(blockedIds.size > 0 ? { notIn: [...blockedIds] } : {})
         }
       },
       select: {
@@ -99,7 +129,7 @@ const searchUsers = async (req, res) => {
         status: true,
         lastActive: true
       },
-      take: 15 // limit results
+      take: 15
     });
 
     res.status(200).json(users);

@@ -23,11 +23,13 @@ export const AuthProvider = ({ children }) => {
         const response = await api.get('/auth/me');
         setUser(response.data.user);
       } catch (error) {
-        console.error('Session verification failed, logging out:', error);
-        // Clear invalid session
-        setUser(null);
-        setToken(null);
-        localStorage.removeItem('token');
+        console.error('Session verification failed:', error);
+        // Clear session only on explicit 401/403 unauthorized errors
+        if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+          setUser(null);
+          setToken(null);
+          localStorage.removeItem('token');
+        }
       } finally {
         setLoading(false);
       }

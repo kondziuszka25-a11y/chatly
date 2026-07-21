@@ -13,18 +13,18 @@ const AppContent = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+      <div className="min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col items-center justify-center">
         <div className="p-4 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl shadow-xl shadow-indigo-500/20 mb-4 animate-bounce">
           <MessageCircle size={32} className="text-white" />
         </div>
-        <p className="text-sm font-medium tracking-wide animate-pulse">Inicjalizacja sesji...</p>
+        <p className="text-sm font-medium tracking-wide animate-pulse text-slate-500 dark:text-slate-400">Inicjalizacja sesji...</p>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="w-full h-full bg-slate-950">
+      <div className="w-full h-full bg-slate-100 dark:bg-slate-950">
         {currentPage === 'login' ? (
           <Login onNavigate={setCurrentPage} />
         ) : (

@@ -117,8 +117,10 @@ const createConversation = async (req, res) => {
         return res.status(400).json({ error: 'At least one other member is required to create a group' });
       }
 
-      // Parse IDs to numbers
-      const targetUserIds = parsedMemberIds.map(id => parseInt(id)).filter(id => !isNaN(id) && id !== currentUserId);
+      // Parse IDs to numbers and deduplicate
+      const targetUserIds = [...new Set(
+        parsedMemberIds.map(id => parseInt(id)).filter(id => !isNaN(id) && id !== currentUserId)
+      )];
 
       // Create unique array of member entries
       const membersToCreate = [
@@ -364,11 +366,40 @@ const updateGroupSettings = async (req, res) => {
       include: {
         members: {
           include: {
-            user: { select: { id: true, username: true, avatarUrl: true } }
+            user: { select: { id: true, username: true, avatarUrl: true, status: true, lastActive: true } }
           }
         }
       }
     });
+
+    // Emit real-time update to all group members
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const formattedMembers = updatedConv.members.map(m => ({
+          userId: m.user.id,
+          username: m.user.username,
+          avatarUrl: m.user.avatarUrl,
+          status: m.user.status,
+          lastActive: m.user.lastActive,
+          joinedAt: m.joinedAt
+        }));
+        updatedConv.members.forEach(member => {
+          io.to(`user_${member.user.id}`).emit('conversation_updated', {
+            id: updatedConv.id,
+            name: updatedConv.name,
+            avatarUrl: updatedConv.avatarUrl,
+            isGroup: updatedConv.isGroup,
+            ownerId: updatedConv.ownerId,
+            updatedAt: updatedConv.updatedAt,
+            members: formattedMembers,
+            lastMessage: null
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting group settings update:', emitErr);
+    }
 
     res.status(200).json(updatedConv);
   } catch (error) {
@@ -423,7 +454,7 @@ const addGroupMember = async (req, res) => {
       include: {
         members: {
           include: {
-            user: { select: { id: true, username: true, avatarUrl: true } }
+            user: { select: { id: true, username: true, avatarUrl: true, status: true, lastActive: true } }
           }
         }
       }
@@ -467,6 +498,35 @@ const addGroupMember = async (req, res) => {
       console.error('Error creating group invite notification:', notifError);
     }
 
+    // Emit conversation_updated to ALL current members (including newly added)
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const formattedMembers = updatedConv.members.map(m => ({
+          userId: m.user.id,
+          username: m.user.username,
+          avatarUrl: m.user.avatarUrl,
+          status: m.user.status,
+          lastActive: m.user.lastActive,
+          joinedAt: m.joinedAt
+        }));
+        updatedConv.members.forEach(member => {
+          io.to(`user_${member.user.id}`).emit('conversation_updated', {
+            id: updatedConv.id,
+            name: updatedConv.name,
+            avatarUrl: updatedConv.avatarUrl,
+            isGroup: updatedConv.isGroup,
+            ownerId: updatedConv.ownerId,
+            updatedAt: updatedConv.updatedAt,
+            members: formattedMembers,
+            lastMessage: null
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting member added event:', emitErr);
+    }
+
     res.status(200).json(updatedConv);
   } catch (error) {
     console.error('Add group member error:', error);
@@ -488,7 +548,8 @@ const removeGroupMember = async (req, res) => {
     }
 
     const conversation = await prisma.conversation.findUnique({
-      where: { id: convId }
+      where: { id: convId },
+      include: { members: true }
     });
 
     if (!conversation) {
@@ -517,6 +578,26 @@ const removeGroupMember = async (req, res) => {
         }
       }
     });
+
+    // Emit real-time events
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        // Notify removed user
+        io.to(`user_${targetUserId}`).emit('group_left', { conversationId: convId });
+        // Notify remaining members
+        const remainingMembers = conversation.members.filter(m => m.userId !== targetUserId);
+        remainingMembers.forEach(member => {
+          io.to(`user_${member.userId}`).emit('conversation_updated', {
+            id: convId,
+            membersChanged: true,
+            removedUserId: targetUserId
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting member removed event:', emitErr);
+    }
 
     res.status(200).json({ message: 'Member removed successfully' });
   } catch (error) {
@@ -578,6 +659,23 @@ const leaveGroup = async (req, res) => {
       await prisma.conversation.delete({
         where: { id: convId }
       });
+    }
+
+    // Emit real-time events
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const remainingMembers = conversation.members.filter(m => m.userId !== currentUserId);
+        remainingMembers.forEach(member => {
+          io.to(`user_${member.userId}`).emit('conversation_updated', {
+            id: convId,
+            membersChanged: true,
+            removedUserId: currentUserId
+          });
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting leave group event:', emitErr);
     }
 
     res.status(200).json({ message: 'Left the group successfully' });

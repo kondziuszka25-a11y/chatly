@@ -27,6 +27,29 @@ const sendMessage = async (req, res) => {
       return res.status(403).json({ error: 'You are not a member of this conversation' });
     }
 
+    // Check if either user has blocked the other (1:1 chats only)
+    const convDetails = await prisma.conversation.findUnique({
+      where: { id: convId },
+      select: { isGroup: true, members: { select: { userId: true } } }
+    });
+
+    if (convDetails && !convDetails.isGroup) {
+      const otherUserId = convDetails.members.find(m => m.userId !== currentUserId)?.userId;
+      if (otherUserId) {
+        const blockExists = await prisma.blockedUser.findFirst({
+          where: {
+            OR: [
+              { blockerId: currentUserId, blockedId: otherUserId },
+              { blockerId: otherUserId, blockedId: currentUserId }
+            ]
+          }
+        });
+        if (blockExists) {
+          return res.status(403).json({ error: 'Cannot send message. One of the users is blocked.' });
+        }
+      }
+    }
+
     let fileUrl = null;
     let fileType = null;
 
